@@ -1,0 +1,31 @@
+.DS_Store
+# 立ち絵のソース PSD は大きいのでリポに含めない（assets/<name>/ の生成済み PNG は含める）
+*.psd
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+# 生成物
+out/
+*.wav
+*.srt
+
+# APIキー等（コミット禁止）
+.env
+.env.local
+# 解説動画の生成物
+build_out*/
+*.mp4
+
+# 作業用スクラッチ
+tmp/
+
+# 開発メモ・ローカル指示（公開しない）
+.claude/
+CLAUDE.local.md
+
+# 立ち絵から bake した素材（著作物のため再配布しない。scripts/bake_assets.sh で再生成）
+assets/*/*.png

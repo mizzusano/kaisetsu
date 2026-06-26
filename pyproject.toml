@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vvlipsync"
+version = "0.1.0"
+description = "VOICEVOX の音声に口パクを合わせ、DaVinci 取り込み用素材（透過PNG連番+wav+SRT）を出力する CLI"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+# 表情つき（base 合成）に必要
+compose = ["Pillow"]
+# PSD から素材を生成する tools/psd_extract.py に必要
+psd = ["psd-tools", "Pillow"]
+
+[project.scripts]
+vvlipsync = "vvlipsync.cli:main"
+vvlipsync-preview = "vvlipsync.preview:main"
+kaisetsu = "kaisetsu.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

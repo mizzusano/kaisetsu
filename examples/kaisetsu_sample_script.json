@@ -1,0 +1,24 @@
+{
+  "title": "再帰関数の解説",
+  "slides": [
+    {
+      "heading": "再帰関数ってなに？",
+      "bullets": ["自分自身を呼び出す関数", "難しそうだけど仕組みはシンプル", "今日はずんだもんと一緒に学ぶのだ"],
+      "dialogue": [
+        {"speaker": "zundamon", "emotion": "通常", "text": "めたん、再帰関数ってよく聞くけど何なのだ？"},
+        {"speaker": "metan", "emotion": "通常", "text": "ふふ、再帰関数というのはね、自分自身を呼び出す関数のことだわ。"},
+        {"speaker": "zundamon", "emotion": "驚き", "text": "自分で自分を呼ぶのだ！？なんだか不思議なのだ。"},
+        {"speaker": "metan", "emotion": "喜び", "text": "そうなのよ。鏡の中にまた鏡が映るような感じね。"}
+      ]
+    },
+    {
+      "heading": "終了条件が大事",
+      "bullets": ["終了条件がないと無限ループ", "必ずどこかで止まる仕組みを作る", "階乗の計算が代表例"],
+      "dialogue": [
+        {"speaker": "zundamon", "emotion": "通常", "text": "ずっと自分を呼び続けたら止まらないのだ？"},
+        {"speaker": "metan", "emotion": "通常", "text": "いい質問だわ。だから終了条件を必ず決めておくのよ。"},
+        {"speaker": "zundamon", "emotion": "喜び", "text": "なるほど、止まる場所を決めておけば安心なのだ！"}
+      ]
+    }
+  ]
+}

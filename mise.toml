@@ -1,0 +1,26 @@
+# mise でこのプロジェクトを完結させる設定。
+#   mise trust          # 初回のみ（この設定を信頼）
+#   mise install        # Python を用意
+#   mise run setup      # .venv を作り vvlipsync を editable インストール
+# 以降、このディレクトリ内では `vvlipsync ...` を直接実行できる
+# （PYTHONPATH=src python3 -m ... は不要）。
+
+[tools]
+python = "3.12"
+
+[env]
+# このディレクトリに入ると .venv を自動作成・自動有効化する。
+# editable インストールした vvlipsync / vvlipsync-preview が PATH に乗る。
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.setup]
+description = "依存（合成=Pillow / PSD=psd-tools）と vvlipsync コマンドをインストール"
+run = "pip install -e '.[compose,psd]'"
+
+[tasks.speakers]
+description = "VOICEVOX の話者・感情(スタイル)一覧を表示"
+run = "vvlipsync --list-speakers"
+
+[tasks.bake]
+description = "立ち絵 PSD から素材(口/base/感情別base)を再生成。ZUNDA_PSD/METAN_PSD で PSD パス指定可"
+run = "bash scripts/bake_assets.sh"

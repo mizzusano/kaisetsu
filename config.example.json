@@ -1,0 +1,11 @@
+{
+  "_comment": "口形 PNG のファイル名を変えたい場合だけ使う。--config で渡す。値は --mouths からの相対パスか絶対パス。",
+  "mouths": {
+    "a": "a.png",
+    "i": "i.png",
+    "u": "u.png",
+    "e": "e.png",
+    "o": "o.png",
+    "closed": "closed.png"
+  }
+}
