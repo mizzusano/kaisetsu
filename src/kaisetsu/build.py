@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import wave
 
 from vvlipsync.cli import _build_base_paths, resolve_mouth_paths
@@ -17,9 +19,11 @@ from vvlipsync.render import write_frames
 from . import timeline as tl
 from .compose import (CHAR_NATIVE, add_bgm, compose_line, concat_clips, render_subtitle,
                       slot_positions)
-from .slides import render_slide, render_title_card
+from .slides import (line_visuals, render_image_slide, render_slide, render_title_card,
+                     resolve_images)
 
 CHAR_HEIGHT = 680  # 立ち絵の表示高さ(px)
+SUBTITLE_TOP = 852  # 字幕が 2 行の時の字幕帯の上端(px, 1080p)
 
 
 def _body_margin(size):
@@ -52,6 +56,29 @@ def _listener_frames(char_dir: str, n_frames: int, fps: float, t_offset: float,
     return out_dir
 
 
+DONE_MARKER = "segment.json"  # セグメント完成の印（途中から再開する時に使う）
+
+
+def _mark_done(seg_dir: str, n_frames: int) -> None:
+    with open(os.path.join(seg_dir, DONE_MARKER), "w", encoding="utf-8") as f:
+        json.dump({"n_frames": n_frames}, f)
+
+
+def _load_done(seg_dir: str):
+    try:
+        with open(os.path.join(seg_dir, DONE_MARKER), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _drop_frames(seg_dir: str) -> None:
+    """クリップ mp4 に焼き込んだあとの PNG 連番を消す（1 セグメント数百 MB になるため）。"""
+    for name in os.listdir(seg_dir):
+        if name == "frames" or name.startswith("listener_"):
+            shutil.rmtree(os.path.join(seg_dir, name), ignore_errors=True)
+
+
 def _wav_seconds(path: str) -> float:
     with wave.open(path) as w:
         return w.getnframes() / w.getframerate()
@@ -59,17 +86,33 @@ def _wav_seconds(path: str) -> float:
 
 def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root,
                     fps, size, char_by_name, head, tail, clock, subtitle=True,
-                    show_characters=True, render_clip=True):
+                    show_characters=True, render_clip=True, keep_frames=True):
     """1 セグメント（タイトルコール or 1 セリフ）を 1 クリップに合成する。
     show_characters=False ならキャラを出さず、音声のみのナレーション（章扉向け）。
     clock は通し時刻（秒）を持つ 1 要素リスト。呼吸の位相に使い、クリップ尺だけ進める。
     (クリップ mp4 のパス or None, タイムライン用の Segment) を返す。
-    render_clip=False ならクリップ mp4 の合成を省く（タイムラインだけ欲しい時）。"""
+    render_clip=False ならクリップ mp4 の合成を省く（タイムラインだけ欲しい時）。
+    keep_frames=False ならクリップを書き出した後に PNG 連番を消す（タイムラインには要る）。
+    完成の印があるセグメントは作り直さずに使う（途中で止まった時の再開用）。"""
     if speaker not in char_by_name:
         raise SystemExit(f"未知の話者: {speaker}")
     spk = char_by_name[speaker]
     spk_dir = os.path.join(assets_root, spk["dir"])
     seg_dir = os.path.join(out_dir, f"seg_{idx:03d}")
+    clip_path = os.path.join(out_dir, f"clip_{idx:03d}.mp4")
+    audio = os.path.join(seg_dir, "audio.wav")
+
+    done = _load_done(seg_dir)
+    frames_ok = not keep_frames or os.path.isdir(os.path.join(seg_dir, "frames"))
+    if done and frames_ok and os.path.isfile(audio) and (not render_clip or os.path.isfile(clip_path)):
+        print(f"  （作成済みを再利用: seg_{idx:03d}）")
+        audio_sec = _wav_seconds(audio)
+        clock[0] += head + audio_sec + tail
+        info = tl.Segment(bg_png=bg_png, speaker=speaker, label=spk["label"], text=text,
+                          seg_dir=seg_dir, n_frames=done["n_frames"], head=head, tail=tail,
+                          audio=audio, audio_seconds=audio_sec, subtitle=subtitle,
+                          show_characters=show_characters)
+        return (clip_path if render_clip else None), info
 
     argv = ["-t", text, "-e", emotion,
             "--emotions", os.path.join(spk_dir, "emotions.json"),
@@ -99,11 +142,13 @@ def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root
                 slots.append({"kind": "seq", "path": lis})
 
     clip = None
-    audio = os.path.join(seg_dir, "audio.wav")
     if render_clip:
-        clip = os.path.join(out_dir, f"clip_{idx:03d}.mp4")
+        clip = clip_path
         compose_line(bg_png, slots, sub_png, audio,
                      clip, fps, size, char_height=CHAR_HEIGHT, head=head, tail=tail)
+    _mark_done(seg_dir, n_frames)
+    if render_clip and not keep_frames:
+        _drop_frames(seg_dir)
     audio_sec = _wav_seconds(audio)
     clock[0] += head + audio_sec + tail
     info = tl.Segment(bg_png=bg_png, speaker=speaker, label=spk["label"], text=text,
@@ -116,13 +161,19 @@ def build_video(script: dict, out_dir: str, assets_root: str,
                 fps: float = 30.0, size=(1920, 1080),
                 bgm: str = "", bgm_volume: float = 0.18,
                 title_call: bool = True, announcer: str = "zundamon",
-                timeline: bool = False, video: bool = True) -> str:
+                timeline: bool = False, video: bool = True, base_dir: str = ".") -> str:
     """解説動画を作る。timeline=True なら DaVinci 取り込み用の timeline/ も書き出す。
-    video=False なら完成 mp4 の合成を省く（timeline のみ）。完成物のパスを返す。"""
+    video=False なら完成 mp4 の合成を省く（timeline のみ）。完成物のパスを返す。
+    base_dir は台本内の画像パス（images[].src）の基準ディレクトリ。"""
     os.makedirs(out_dir, exist_ok=True)
     char_by_name = {c["name"]: c for c in CHARACTERS}
+    # 画像の指定ミスは、重い合成を始める前に止める
+    for slide in script["slides"]:
+        line_visuals(slide)
+        resolve_images(slide, base_dir)
     common = dict(out_dir=out_dir, assets_root=assets_root, fps=fps, size=size,
-                  char_by_name=char_by_name, clock=[0.0], render_clip=video)
+                  char_by_name=char_by_name, clock=[0.0], render_clip=video,
+                  keep_frames=timeline)
 
     clips = []
     segments = []
@@ -130,8 +181,22 @@ def build_video(script: dict, out_dir: str, assets_root: str,
     for si, slide in enumerate(script["slides"]):
         heading = slide["heading"]
         slide_png = os.path.join(out_dir, f"slide_{si:02d}.png")
-        render_slide(heading, slide.get("bullets", []), slide_png, size,
-                     body_margin=_body_margin(size))
+        bottom = render_slide(heading, slide.get("bullets", []), slide_png, size,
+                              body_margin=_body_margin(size))
+        if bottom > SUBTITLE_TOP:
+            print(f"[警告] スライド「{heading}」の箇条書きが字幕帯にかかる"
+                  f"（下端 y={bottom}）。箇条書きを短く・少なくする")
+        # 台本で画像が指定されていれば、画像ごとの背景も描いておく
+        visuals = line_visuals(slide)
+        images = resolve_images(slide, base_dir)
+        bg_by_key = {None: slide_png}
+        for key in dict.fromkeys(v for v in visuals if v is not None):
+            spec = images[key]
+            png = os.path.join(out_dir, f"slide_{si:02d}_{key}.png")
+            render_image_slide(heading, spec["src"], png, size,
+                               caption=spec.get("caption", ""), credit=spec.get("credit", ""),
+                               crop=spec.get("crop"))
+            bg_by_key[key] = png
 
         # 段落（スライド）の頭にタイトルコール: タイトルカード＋見出しを読み上げ
         if title_call:
@@ -150,7 +215,7 @@ def build_video(script: dict, out_dir: str, assets_root: str,
             head = 0.2 if j == 0 else 0.12
             tail = 0.55 if j == len(dialogue) - 1 else 0.28
             print(f"[seg {seg}] {char_by_name[dl['speaker']]['label']}/{dl['emotion']}: {dl['text']}")
-            clip, info = _render_segment(seg, slide_png, dl["speaker"], dl["emotion"],
+            clip, info = _render_segment(seg, bg_by_key[visuals[j]], dl["speaker"], dl["emotion"],
                                          dl["text"], head=head, tail=tail, **common)
             clips.append(clip)
             segments.append(info)

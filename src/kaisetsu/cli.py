@@ -86,7 +86,8 @@ def main(argv=None) -> int:
                         bgm=args.bgm, bgm_volume=args.bgm_volume,
                         title_call=not args.no_title_call, announcer=args.announcer,
                         timeline=args.timeline or args.timeline_only,
-                        video=not args.timeline_only)
+                        video=not args.timeline_only,
+                        base_dir=os.path.dirname(os.path.abspath(args.script)) if args.script else ".")
     print(f"完成: {final}")
     return 0
 

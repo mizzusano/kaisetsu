@@ -141,16 +141,49 @@ def add_bgm(video_in: str, bgm_path: str, out_path: str, volume: float = 0.18) -
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def concat_clips(clips: List[str], out_path: str) -> None:
-    """同一エンコード設定のクリップを連結する。"""
+def _video_seconds(path: str) -> float:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=duration", "-of", "csv=p=0", path],
+                         check=True, capture_output=True, text=True).stdout
+    return float(out.strip().rstrip(","))
+
+
+def concat_clips(clips: List[str], out_path: str, sample_rate: int = 48000) -> None:
+    """同一エンコード設定のクリップを、音声と映像がずれないように連結する。
+
+    各クリップは AAC の都合で音声が映像より少し長いので、そのまま -c copy で連結すると
+    映像のタイムスタンプに隙間ができ、隙間を無視する再生環境では後半ほど口パクと声がずれる。
+    そこで映像はクリップごとの映像の尺で隙間なく繋ぎ（再エンコードなし）、音声は各クリップを
+    映像の尺ぴったりに切り詰めた PCM を繋いでから 1 回だけ AAC にする。"""
+    import wave
+
     ffmpeg = _ffmpeg()
-    listfile = out_path + ".concat.txt"
-    with open(listfile, "w", encoding="utf-8") as f:
-        for c in clips:
-            f.write(f"file '{os.path.abspath(c)}'\n")
-    subprocess.run(
-        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", listfile,
-         "-c", "copy", out_path],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    os.remove(listfile)
+    work = out_path + ".concat"
+    os.makedirs(work, exist_ok=True)
+    try:
+        listfile = os.path.join(work, "list.txt")
+        wav_out = os.path.join(work, "audio.wav")
+        video_only = os.path.join(work, "video.mp4")
+        with open(listfile, "w", encoding="utf-8") as f, wave.open(wav_out, "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            for i, c in enumerate(clips):
+                sec = _video_seconds(c)
+                f.write(f"file '{os.path.abspath(c)}'\nduration {sec:.6f}\n")
+                n = round(sec * sample_rate)
+                pcm = subprocess.run(
+                    [ffmpeg, "-v", "error", "-i", c, "-vn", "-ac", "2", "-ar", str(sample_rate),
+                     "-af", "apad", "-f", "s16le", "-t", f"{sec:.6f}", "-"],
+                    check=True, capture_output=True).stdout
+                w.writeframes(pcm[: n * 4].ljust(n * 4, b"\0"))
+        subprocess.run(
+            [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", listfile, "-map", "0:v",
+             "-c", "copy", video_only],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            [ffmpeg, "-y", "-i", video_only, "-i", wav_out, "-map", "0:v", "-map", "1:a",
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", out_path],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
