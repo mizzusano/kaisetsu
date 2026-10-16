@@ -27,7 +27,8 @@ from .render import (
     write_frames,
     write_srt,
 )
-from .timeline import Segment, query_segments
+from .motion import motion_at
+from .timeline import Segment, pause_starts, pose_intervals, query_segments
 from .voicevox import VoicevoxClient
 
 DEFAULT_MOUTHS = {
@@ -138,8 +139,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--flip", action="store_true",
         help="左右反転して出力（動画の右端/左端に置く時、キャラを内向きにする）",
     )
+    p.add_argument(
+        "--no-motion", action="store_true",
+        help="体の動き（ふわふわ呼吸・感情モーション）を付けない",
+    )
+    p.add_argument(
+        "--motion-offset", type=float, default=0.0,
+        help="呼吸の位相に使う通し時刻のオフセット秒（クリップを繋ぐ時に呼吸を連続させる）",
+    )
     p.add_argument("--preview", action="store_true", help="確認用 mp4 (preview.mp4) も生成する")
     p.add_argument("--bg", default="white", help="プレビュー背景色 (既定: white)")
+    p.add_argument(
+        "--alpha-video", nargs="?", const="mov", choices=["mov", "webm"], default=None,
+        help="背景透過の動画 character.<mov|webm> も生成する（既定 mov=ProRes 4444。webm=VP9）",
+    )
+    p.add_argument(
+        "--timeline", action="store_true",
+        help="DaVinci 取り込み用の timeline.fcpxml も生成する（character.mov ＋ audio.wav を並べる）",
+    )
+    p.add_argument("--timeline-size", default="1920x1080",
+                   help="--timeline のタイムライン解像度 (既定: 1920x1080。縦動画なら 1080x1920)")
     return p
 
 
@@ -186,7 +205,8 @@ def main(argv=None) -> int:
     all_segments: List[Segment] = []
     audio_items: List[Tuple[float, bytes, float]] = []
     srt_entries: List[Tuple[float, float, str]] = []
-    line_faces = []  # (line_start, emotion) — --bake で行ごとの表情に使う
+    line_faces = []  # (line_start, emotion) — 行ごとの表情に使う
+    line_pauses = []  # 各行の句読点ポーズ開始（通し時刻）— ポーズ切り替えに使う
 
     cursor = 0.0
     for idx, (speaker, emotion, text) in enumerate(lines):
@@ -205,6 +225,7 @@ def main(argv=None) -> int:
         wav = client.synthesis(query, sid)
 
         segs, total = query_segments(query, args.speed)
+        line_pauses.append([cursor + t for t in pause_starts(query, args.speed)])
         for s in segs:
             all_segments.append(Segment(s.start + cursor, s.end + cursor, s.shape))
         srt_entries.append((cursor, cursor + total, text))
@@ -229,9 +250,27 @@ def main(argv=None) -> int:
         for i, (start, emo) in enumerate(line_faces)
     ]
     default_emo = line_faces[-1][1] if line_faces else None
-    frame_emotions = values_per_frame(face_intervals, total_frames, args.fps, default_emo)
     base_paths = _build_base_paths(args.mouths, {e for _, e in line_faces})
-    write_frames(list(zip(frame_emotions, shapes)), mouth_paths, base_paths, frames_dir, flip=args.flip)
+
+    # ポーズ: 句読点ごとに、その感情のポーズ差分を巡回する
+    pose_ivs = []
+    for (start, end, emo), pauses in zip(face_intervals, line_pauses):
+        n = sum(1 for k in base_paths if isinstance(k, tuple) and k[0] == emo)
+        pose_ivs += [(s, e, (emo, k)) for s, e, k in pose_intervals(start, end, pauses, n)]
+    frame_keys = values_per_frame(pose_ivs, total_frames, args.fps, (default_emo, 0))
+
+    transforms = None
+    if not args.no_motion:
+        line_ivs = [(s, e, (emo, s)) for s, e, emo in face_intervals]
+        frame_lines = values_per_frame(line_ivs, total_frames, args.fps, (default_emo, 0.0))
+        transforms = []
+        for i, (emo, line_start) in enumerate(frame_lines):
+            t = (i + 0.5) / args.fps
+            kind = presets.get(emo, {}).get("motion") if emo else None
+            transforms.append(motion_at(emo, t - line_start, t + args.motion_offset, kind=kind))
+
+    write_frames(list(zip(frame_keys, shapes)), mouth_paths, base_paths, frames_dir,
+                 flip=args.flip, transforms=transforms)
 
     build_audio(audio_items, os.path.join(args.out, "audio.wav"))
     write_srt(srt_entries, os.path.join(args.out, "subtitles.srt"))
@@ -251,15 +290,56 @@ def main(argv=None) -> int:
             frames_dir, os.path.join(args.out, "audio.wav"), preview_out,
             args.fps, base="", bg=args.bg,
         )
+    if args.alpha_video or args.timeline:
+        from .preview import compile_alpha_video
+        kinds = {args.alpha_video} if args.alpha_video else set()
+        if args.timeline:
+            kinds.add("mov")  # タイムラインは ProRes 4444 の透過動画を参照する
+        for kind in sorted(kinds):
+            compile_alpha_video(frames_dir, os.path.join(args.out, "audio.wav"),
+                                os.path.join(args.out, f"character.{kind}"), args.fps)
+    if args.timeline:
+        _write_timeline(args, resolver, frames_dir, total_frames)
     return 0
 
 
+def _write_timeline(args, resolver, frames_dir: str, total_frames: int) -> None:
+    import wave
+
+    from .fcpxml import single_character_fcpxml
+    from .preview import _canvas_size
+
+    try:
+        tw, th = (int(v) for v in args.timeline_size.lower().split("x"))
+    except ValueError:
+        sys.exit(f"--timeline-size は 幅x高さ で指定する: {args.timeline_size}")
+    audio = os.path.join(args.out, "audio.wav")
+    with wave.open(audio) as w:
+        rate, ch, n = w.getframerate(), w.getnchannels(), w.getnframes()
+    name = resolver.describe(args.speaker)[0]
+    xml = single_character_fcpxml(
+        name, args.fps, (tw, th), total_frames,
+        mov=os.path.join(args.out, "character.mov"),
+        mov_size=_canvas_size(os.path.join(frames_dir, "00000.png")),
+        wav=audio, wav_frames=int(n / rate * args.fps), audio_rate=rate, audio_channels=ch,
+    )
+    path = os.path.join(args.out, "timeline.fcpxml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(xml)
+    print(f"タイムライン: {path}（字幕は subtitles.srt を読み込む）")
+
+
 def _build_base_paths(mouths_dir: str, emotions) -> dict:
-    """--bake 用。感情名 → base_<感情>.png（無ければ None）。None キーは base.png のフォールバック。"""
+    """(感情, ポーズ番号) → base 画像パス。ポーズ 0 は base_<感情>.png（無ければ None）、
+    1 以降は base_<感情>_p<n>.png があるだけ。None キーは base.png のフォールバック。"""
     paths = {}
     for e in emotions:
         p = os.path.join(mouths_dir, f"base_{e}.png") if e else ""
-        paths[e] = p if p and os.path.isfile(p) else None
+        paths[(e, 0)] = p if p and os.path.isfile(p) else None
+        k = 1
+        while e and os.path.isfile(os.path.join(mouths_dir, f"base_{e}_p{k}.png")):
+            paths[(e, k)] = os.path.join(mouths_dir, f"base_{e}_p{k}.png")
+            k += 1
     fallback = os.path.join(mouths_dir, "base.png")
     paths[None] = fallback if os.path.isfile(fallback) else None
     return paths

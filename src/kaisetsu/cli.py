@@ -35,6 +35,10 @@ def main(argv=None) -> int:
                    help="段落（スライド）頭のタイトルコールを入れない")
     p.add_argument("--announcer", default="zundamon", choices=["zundamon", "metan"],
                    help="タイトルコールを読む話者 (既定: zundamon)")
+    p.add_argument("--timeline", action="store_true",
+                   help="DaVinci 取り込み用のタイムライン（timeline/timeline.fcpxml ＋素材）も書き出す")
+    p.add_argument("--timeline-only", action="store_true",
+                   help="タイムラインだけ書き出す（完成 mp4 の合成を省く）")
     args = p.parse_args(argv)
 
     if args.bgm and not os.path.isfile(args.bgm):
@@ -80,7 +84,9 @@ def main(argv=None) -> int:
 
     final = build_video(script, args.out, args.assets_root, fps=args.fps,
                         bgm=args.bgm, bgm_volume=args.bgm_volume,
-                        title_call=not args.no_title_call, announcer=args.announcer)
+                        title_call=not args.no_title_call, announcer=args.announcer,
+                        timeline=args.timeline or args.timeline_only,
+                        video=not args.timeline_only)
     print(f"完成: {final}")
     return 0
 

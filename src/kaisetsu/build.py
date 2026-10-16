@@ -7,10 +7,16 @@
 from __future__ import annotations
 
 import os
+import wave
 
+from vvlipsync.cli import _build_base_paths, resolve_mouth_paths
 from vvlipsync.cli import main as vvmain
+from vvlipsync.motion import motion_at
+from vvlipsync.render import write_frames
 
-from .compose import CHAR_NATIVE, add_bgm, compose_line, concat_clips, render_subtitle
+from . import timeline as tl
+from .compose import (CHAR_NATIVE, add_bgm, compose_line, concat_clips, render_subtitle,
+                      slot_positions)
 from .slides import render_slide, render_title_card
 
 CHAR_HEIGHT = 680  # 立ち絵の表示高さ(px)
@@ -31,34 +37,34 @@ CHARACTERS = [
 LISTENER_EMOTION = "通常"
 
 
-def _listener_image(char_dir: str, cache_dir: str) -> str:
-    """聞き手（喋っていない側）の静止画 = base_通常 ＋ 閉じ口 を合成してキャッシュする。
-    base はマウスを抜いた立ち絵なので、closed.png を重ねて口を結ばせる。"""
-    out = os.path.join(cache_dir, f"_listener_{os.path.basename(char_dir)}.png")
-    if os.path.isfile(out):
-        return out
-    from PIL import Image
-    base = None
-    for c in (f"base_{LISTENER_EMOTION}.png", "base.png"):
-        p = os.path.join(char_dir, c)
-        if os.path.isfile(p):
-            base = p
-            break
-    if base is None:
+def _listener_frames(char_dir: str, n_frames: int, fps: float, t_offset: float,
+                     out_dir: str, flip: bool) -> str:
+    """聞き手（喋っていない側）の連番 = base_通常 ＋ 閉じ口 に、ふわふわ呼吸だけを付ける。
+    t_offset は通し時刻。話者と同じ時計で呼吸させ、クリップを跨いでも位相が途切れないようにする。"""
+    base_paths = _build_base_paths(char_dir, {LISTENER_EMOTION})
+    if not any(base_paths.values()):
         raise SystemExit(f"聞き手の立ち絵が無い: {char_dir}")
-    img = Image.open(base).convert("RGBA").copy()
-    closed = os.path.join(char_dir, "closed.png")
-    if os.path.isfile(closed):
-        img.alpha_composite(Image.open(closed).convert("RGBA"))
-    img.save(out)
-    return out
+    mouth_paths = resolve_mouth_paths(char_dir, "")
+    specs = [((LISTENER_EMOTION, 0), "closed")] * n_frames
+    tfs = [motion_at(LISTENER_EMOTION, (i + 0.5) / fps, t_offset + (i + 0.5) / fps)
+           for i in range(n_frames)]
+    write_frames(specs, mouth_paths, base_paths, out_dir, flip=flip, transforms=tfs)
+    return out_dir
+
+
+def _wav_seconds(path: str) -> float:
+    with wave.open(path) as w:
+        return w.getnframes() / w.getframerate()
 
 
 def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root,
-                    fps, size, char_by_name, head, tail, subtitle=True,
-                    show_characters=True) -> str:
+                    fps, size, char_by_name, head, tail, clock, subtitle=True,
+                    show_characters=True, render_clip=True):
     """1 セグメント（タイトルコール or 1 セリフ）を 1 クリップに合成する。
-    show_characters=False ならキャラを出さず、音声のみのナレーション（章扉向け）。"""
+    show_characters=False ならキャラを出さず、音声のみのナレーション（章扉向け）。
+    clock は通し時刻（秒）を持つ 1 要素リスト。呼吸の位相に使い、クリップ尺だけ進める。
+    (クリップ mp4 のパス or None, タイムライン用の Segment) を返す。
+    render_clip=False ならクリップ mp4 の合成を省く（タイムラインだけ欲しい時）。"""
     if speaker not in char_by_name:
         raise SystemExit(f"未知の話者: {speaker}")
     spk = char_by_name[speaker]
@@ -68,41 +74,58 @@ def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root
     argv = ["-t", text, "-e", emotion,
             "--emotions", os.path.join(spk_dir, "emotions.json"),
             "-m", spk_dir, "-s", str(spk["speaker"]),
-            "--fps", str(fps), "-o", seg_dir]
+            "--fps", str(fps), "-o", seg_dir,
+            "--motion-offset", str(clock[0] + head)]
     if spk["flip"]:
         argv.append("--flip")
     vvmain(argv)
 
     sub_png = ""
-    if subtitle:
+    if subtitle and render_clip:
         sub_png = os.path.join(seg_dir, "sub.png")
         render_subtitle(f"{spk['label']}「{text}」", sub_png, size)
 
     slots = []
+    frames_dir = os.path.join(seg_dir, "frames")
+    n_frames = len([f for f in os.listdir(frames_dir) if f.endswith(".png")])
     if show_characters:
         for c in CHARACTERS:
             if c["name"] == speaker:
-                slots.append({"kind": "seq", "path": os.path.join(seg_dir, "frames")})
+                slots.append({"kind": "seq", "path": frames_dir})
             else:
-                base = _listener_image(os.path.join(assets_root, c["dir"]), out_dir)
-                slots.append({"kind": "img", "path": base, "flip": c["flip"]})
+                lis = _listener_frames(os.path.join(assets_root, c["dir"]), n_frames, fps,
+                                       clock[0] + head, os.path.join(seg_dir, f"listener_{c['name']}"),
+                                       c["flip"])
+                slots.append({"kind": "seq", "path": lis})
 
-    clip = os.path.join(out_dir, f"clip_{idx:03d}.mp4")
-    compose_line(bg_png, slots, sub_png, os.path.join(seg_dir, "audio.wav"),
-                 clip, fps, size, char_height=CHAR_HEIGHT, head=head, tail=tail)
-    return clip
+    clip = None
+    audio = os.path.join(seg_dir, "audio.wav")
+    if render_clip:
+        clip = os.path.join(out_dir, f"clip_{idx:03d}.mp4")
+        compose_line(bg_png, slots, sub_png, audio,
+                     clip, fps, size, char_height=CHAR_HEIGHT, head=head, tail=tail)
+    audio_sec = _wav_seconds(audio)
+    clock[0] += head + audio_sec + tail
+    info = tl.Segment(bg_png=bg_png, speaker=speaker, label=spk["label"], text=text,
+                      seg_dir=seg_dir, n_frames=n_frames, head=head, tail=tail, audio=audio,
+                      audio_seconds=audio_sec, subtitle=subtitle, show_characters=show_characters)
+    return clip, info
 
 
 def build_video(script: dict, out_dir: str, assets_root: str,
                 fps: float = 30.0, size=(1920, 1080),
                 bgm: str = "", bgm_volume: float = 0.18,
-                title_call: bool = True, announcer: str = "zundamon") -> str:
+                title_call: bool = True, announcer: str = "zundamon",
+                timeline: bool = False, video: bool = True) -> str:
+    """解説動画を作る。timeline=True なら DaVinci 取り込み用の timeline/ も書き出す。
+    video=False なら完成 mp4 の合成を省く（timeline のみ）。完成物のパスを返す。"""
     os.makedirs(out_dir, exist_ok=True)
     char_by_name = {c["name"]: c for c in CHARACTERS}
     common = dict(out_dir=out_dir, assets_root=assets_root, fps=fps, size=size,
-                  char_by_name=char_by_name)
+                  char_by_name=char_by_name, clock=[0.0], render_clip=video)
 
     clips = []
+    segments = []
     seg = 0
     for si, slide in enumerate(script["slides"]):
         heading = slide["heading"]
@@ -115,9 +138,11 @@ def build_video(script: dict, out_dir: str, assets_root: str,
             tc_png = os.path.join(out_dir, f"title_{si:02d}.png")
             render_title_card(heading, tc_png, size, index=si + 1)
             print(f"[title {si + 1}] {heading}")
-            clips.append(_render_segment(seg, tc_png, announcer, "喜び", heading,
+            clip, info = _render_segment(seg, tc_png, announcer, "喜び", heading,
                                          head=0.5, tail=0.8, subtitle=False,
-                                         show_characters=False, **common))
+                                         show_characters=False, **common)
+            clips.append(clip)
+            segments.append(info)
             seg += 1
 
         dialogue = slide["dialogue"]
@@ -125,9 +150,18 @@ def build_video(script: dict, out_dir: str, assets_root: str,
             head = 0.2 if j == 0 else 0.12
             tail = 0.55 if j == len(dialogue) - 1 else 0.28
             print(f"[seg {seg}] {char_by_name[dl['speaker']]['label']}/{dl['emotion']}: {dl['text']}")
-            clips.append(_render_segment(seg, slide_png, dl["speaker"], dl["emotion"],
-                                         dl["text"], head=head, tail=tail, **common))
+            clip, info = _render_segment(seg, slide_png, dl["speaker"], dl["emotion"],
+                                         dl["text"], head=head, tail=tail, **common)
+            clips.append(clip)
+            segments.append(info)
             seg += 1
+
+    result = ""
+    if timeline:
+        result = export_timeline(segments, out_dir, fps, size, script.get("title") or "kaisetsu",
+                                 bgm=bgm, bgm_volume=bgm_volume)
+    if not video:
+        return result
 
     final = os.path.join(out_dir, "video.mp4")
     if bgm:
@@ -138,3 +172,55 @@ def build_video(script: dict, out_dir: str, assets_root: str,
     else:
         concat_clips(clips, final)
     return final
+
+
+def export_timeline(segments, out_dir: str, fps: float, size, title: str,
+                    bgm: str = "", bgm_volume: float = 0.18) -> str:
+    """DaVinci 取り込み用の素材一式を out_dir/timeline/ に書き出し、FCPXML のパスを返す。"""
+    from PIL import Image
+
+    tdir = os.path.join(out_dir, "timeline")
+    os.makedirs(tdir, exist_ok=True)
+    placements = tl.place(segments, fps)
+    total = sum(p.total for p in placements)
+
+    characters = []
+    for slot, (c, (x, y)) in enumerate(zip(CHARACTERS, slot_positions(size, CHAR_HEIGHT))):
+        # キャラ非表示区間（章扉）用の透明フレーム。キャラ連番と同じサイズにする
+        any_frame = next((os.path.join(s.seg_dir, "frames" if s.speaker == c["name"]
+                                       else f"listener_{c['name']}")
+                          for s in segments if s.show_characters), None)
+        blank = os.path.join(tdir, f"_blank_{c['name']}.png")
+        if any_frame:
+            first = sorted(f for f in os.listdir(any_frame) if f.endswith(".png"))[0]
+            with Image.open(os.path.join(any_frame, first)) as im:
+                Image.new("RGBA", im.size, (0, 0, 0, 0)).save(blank)
+        else:
+            Image.new("RGBA", (2, CHAR_HEIGHT), (0, 0, 0, 0)).save(blank)
+        frames = tl.character_frames(segments, placements, c["name"], blank)
+        mov = os.path.join(tdir, f"{c['name']}.mov")
+        print(f"[timeline] {c['label']} の透過トラックを書き出し中（{len(frames)} フレーム）")
+        tl.write_character_mov(frames, mov, fps, size, CHAR_HEIGHT, x, y)
+        os.remove(blank)
+        characters.append((c["label"], mov, 2 + slot))
+
+    voices = []
+    for s, p in zip(segments, placements):
+        sec, rate, ch = tl.wav_info(s.audio)
+        dur = min(p.body, int(sec * fps))
+        voices.append((s.audio, p.voice_start, dur, rate, ch))
+
+    bgm_clip = None
+    if bgm:
+        bgm_wav = os.path.join(tdir, "bgm.wav")
+        tl.write_bgm_wav(bgm, bgm_wav, total / fps)
+        bgm_clip = (bgm_wav, total, 48000, 2, bgm_volume)
+
+    tl.write_srt(tl.subtitle_entries(segments, placements, fps), os.path.join(tdir, "subtitles.srt"))
+    xml = tl.build_fcpxml(title, fps, size, total, tl.slide_runs(segments, placements),
+                          characters, voices, bgm_clip)
+    path = os.path.join(tdir, "timeline.fcpxml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(xml)
+    print(f"[timeline] {path}（字幕: timeline/subtitles.srt）")
+    return path

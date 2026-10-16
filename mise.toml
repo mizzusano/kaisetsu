@@ -24,3 +24,7 @@ run = "vvlipsync --list-speakers"
 [tasks.bake]
 description = "立ち絵 PSD から素材(口/base/感情別base)を再生成。ZUNDA_PSD/METAN_PSD で PSD パス指定可"
 run = "bash scripts/bake_assets.sh"
+
+[tasks.test]
+description = "ユニットテストを実行"
+run = "python -m unittest discover -s tests"

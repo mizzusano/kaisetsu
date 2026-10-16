@@ -51,3 +51,28 @@ def query_segments(query: dict, speed: float = 1.0) -> Tuple[List[Segment], floa
 
     t += query.get("postPhonemeLength", 0.0) / speed
     return segs, t
+
+
+def pause_starts(query: dict, speed: float = 1.0) -> List[float]:
+    """1 行分のクエリから、句読点ポーズの開始時刻（行頭からの秒）を返す。
+    ポーズの切り替え（身振り）をこのタイミングに合わせる。"""
+    starts: List[float] = []
+    t = query.get("prePhonemeLength", 0.0) / speed
+    for ap in query.get("accent_phrases", []):
+        for mora in ap.get("moras", []):
+            t += (mora.get("vowel_length", 0.0) + (mora.get("consonant_length") or 0.0)) / speed
+        pause = ap.get("pause_mora")
+        if pause:
+            starts.append(t)
+            t += pause.get("vowel_length", 0.0) / speed
+    return starts
+
+
+def pose_intervals(start: float, end: float, switch_times: List[float],
+                   n_poses: int) -> List[Tuple[float, float, int]]:
+    """[start, end) を switch_times で区切り、ポーズ番号 0,1,…,n_poses-1 を順に巡回して割り当てる。"""
+    if n_poses <= 1:
+        return [(start, end, 0)]
+    cuts = [t for t in sorted(switch_times) if start < t < end]
+    bounds = [start] + cuts + [end]
+    return [(bounds[k], bounds[k + 1], k % n_poses) for k in range(len(bounds) - 1)]

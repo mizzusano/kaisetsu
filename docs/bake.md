@@ -11,7 +11,7 @@
 
 ## 手順
 
-1. PSD をダウンロードして `assets/` に置く
+1. PSD をダウンロードして `tmp/` に置く
 
    | キャラ | 既定ファイル名 |
    |---|---|
@@ -34,7 +34,8 @@
    assets/metan/
      a.png i.png u.png e.png o.png closed.png  ← 口6種（フルキャンバス透過）
      base.png                                   ← 通常立ち絵（口なし）
-     base_通常.png base_喜び.png base_怒り.png …  ← 感情別立ち絵
+     base_通常.png base_喜び.png base_怒り.png …  ← 感情別立ち絵（ポーズ 0）
+     base_喜び_p1.png base_喜び_p2.png …         ← 感情別のポーズ差分（poses 指定時）
    ```
 
 ## 別キャラを追加する
@@ -84,3 +85,16 @@
 ```
 
 `voice` は VOICEVOX のスタイル名（`vvlipsync --list-speakers` で確認）。
+
+### ポーズ（腕の差分）
+
+`groups` に腕などのグループを足し、プリセットにその既定レイヤーを書く。`poses` に差分を並べると、
+`base_<感情>.png`（ポーズ 0）に加えて `base_<感情>_p<n>.png` が生成され、vvlipsync が句読点ごとに切り替える。
+
+```json
+"喜び": { "voice": "あまあま", "目": "にっこり", "右腕": "基本", "左腕": "基本",
+          "poses": [ { "右腕": "手を挙げる", "左腕": "手を挙げる" }, { "右腕": "手を挙げる" } ] }
+```
+
+- `poses` の各要素はプリセットとの差分（書いたグループだけ切り替わる）。
+- `"motion": "bounce"` のように書くと体の動きの種類を差し替えられる（→ [vvlipsync](vvlipsync.md#体の動きとポーズ)）。

@@ -42,11 +42,24 @@ DEFAULT_MAP = {
 }
 
 
+def _shown(layer, root) -> bool:
+    """layer 自身と祖先グループがすべて表示されているか。"""
+    while layer is not None and layer is not root:
+        if not layer.visible:
+            return False
+        layer = layer.parent
+    return True
+
+
 def find_group(psd, name):
-    # 接頭辞を除いた完全一致を優先（'目' が '枝豆'/'目セット' に誤マッチしないように）
-    for layer in psd.descendants():
-        if layer.is_group() and _strip(layer.name) == name:
+    # 接頭辞を除いた完全一致を優先（'目' が '枝豆'/'目セット' に誤マッチしないように）。
+    # 同名グループが複数ある場合（服装ごとの '!左腕' など）は、実際に表示される側を選ぶ。
+    exact = [l for l in psd.descendants() if l.is_group() and _strip(l.name) == name]
+    for layer in exact:
+        if _shown(layer, psd):
             return layer
+    if exact:
+        return exact[0]
     for layer in psd.descendants():
         if layer.is_group() and name in layer.name:
             return layer
@@ -85,8 +98,24 @@ def set_exclusive(group, chosen: str) -> None:
         layer.visible = (_strip(layer.name) == chosen)
 
 
+def preset_poses(preset: dict) -> list:
+    """プリセットをポーズごとのレイヤー選択に展開する。
+
+    "poses" が無ければプリセットそのもの 1 つ。あれば各ポーズの差分をプリセットに上書きしたもの。
+    ポーズ 0 が base_<感情>.png、1 以降が base_<感情>_p<n>.png になる。"""
+    common = {k: v for k, v in preset.items() if k != "poses"}
+    poses = preset.get("poses") or [{}]
+    return [{**common, **pose} for pose in poses]
+
+
+def base_filename(emotion: str, pose_index: int) -> str:
+    if pose_index == 0:
+        return f"base_{emotion}.png"
+    return f"base_{emotion}_p{pose_index}.png"
+
+
 def render_emotion_base(psd_path, size, mouth_group_name, groups, preset, out_path):
-    """プリセットに従って 目/眉/顔色/記号 を切り替え、口を消した立ち絵を書き出す。
+    """プリセットに従って 目/眉/顔色/記号/腕など を切り替え、口を消した立ち絵を書き出す。
     PSD を読み直すことで他プリセットの状態を引きずらない。"""
     psd = PSDImage.open(psd_path)
     find_group(psd, mouth_group_name).visible = False  # 口は base に含めない
@@ -137,10 +166,16 @@ def main(argv=None) -> int:
             cfg = json.load(f)
         groups = cfg["groups"]
         for name, preset in cfg["presets"].items():
-            out = os.path.join(args.out, f"base_{name}.png")
-            render_emotion_base(args.psd, size, mouth_group_name, groups, preset, out)
-            face = " / ".join(f"{k}={preset[k]}" for k in ("目", "眉", "顔色", "記号") if k in preset)
-            print(f"  base_{name}  voice={preset.get('voice','-')}  {face}")
+            # 前回 bake の古いポーズ差分を残さない
+            for f in os.listdir(args.out):
+                if f.startswith(f"base_{name}_p") and f.endswith(".png"):
+                    os.remove(os.path.join(args.out, f))
+            for k, sel in enumerate(preset_poses(preset)):
+                fname = base_filename(name, k)
+                render_emotion_base(args.psd, size, mouth_group_name, groups, sel,
+                                    os.path.join(args.out, fname))
+                desc = " / ".join(f"{g}={sel[g]}" for g in groups if g != "口" and g in sel)
+                print(f"  {fname:22s} voice={sel.get('voice','-')}  {desc}")
 
     return 0
 

@@ -55,6 +55,8 @@ kaisetsu --script examples/kaisetsu_sample_script.json -o build_out/
 | `--bgm-volume` | 0.18 | BGM の音量倍率 |
 | `--no-title-call` | — | 段落頭のタイトルコール（章扉）を無効化 |
 | `--announcer` | `zundamon` | タイトルコールを読む話者（zundamon / metan） |
+| `--timeline` | off | DaVinci 取り込み用のタイムライン（`timeline/timeline.fcpxml`＋素材）も書き出す |
+| `--timeline-only` | off | タイムラインだけ書き出す（完成 mp4 の合成を省く） |
 
 ```bash
 # BGM つき
@@ -64,10 +66,35 @@ kaisetsu 入力.md -o build_out/ --bgm intro.mp4 --bgm-volume 0.12
 
 出力 `build_out/`: `script.json`（生成台本）、スライド/クリップ中間物、`video.mp4`（完成動画）。
 
+## DaVinci Resolve で編集する（`--timeline`）
+
+完成 mp4 の代わりに（または加えて）、**DaVinci で編集できるタイムライン**を書き出す。
+
+```bash
+kaisetsu --script 台本.json -o build_out/ --timeline-only --bgm bgm.mp3
+```
+
+`build_out/timeline/`:
+
+| ファイル | 中身 |
+|---|---|
+| `timeline.fcpxml` | タイムライン本体（DaVinci: ファイル → 読み込み → タイムライン） |
+| `metan.mov` / `zundamon.mov` | キャラごとの全尺透過トラック（ProRes 4444。完成動画と同じ位置に配置済み） |
+| `subtitles.srt` | 通しの字幕（字幕トラックに読み込む） |
+| `bgm.wav` | `--bgm` 指定時。全尺ぶんにループ済み（音量は FCPXML 側で下げてある） |
+
+トラック構成: V1=スライド/章扉（静止画）、V2=めたん、V3=ずんだもん、A1=セリフ（1 セリフ 1 クリップ）、A2=BGM。
+
+- キャラは 1920x1080 の透過キャンバス上に配置済みなので、読み込んだ時点で完成動画と同じ見た目になる。
+  位置・大きさは DaVinci のインスペクタで後から変えられる。
+- セリフ音声は各 `seg_*/audio.wav` を参照するので、`build_out/` を移動・削除しないこと。
+- 透過トラックは容量が大きい（キャラ 1 人あたり約 10MB/秒）。
+
 ## 構成・テンポ
 
 - **タイトルコール（章扉）**: 段落の頭に見出しを大きく出したフルスクリーンカードを表示し、announcer が読み上げる。`--no-title-call` で無効化。
 - **「間」**: 各セリフ・章扉の前後に少しの無音＋フレーム保持を入れてテンポを整える。
+- **体の動き**: 話し手は感情ごとのモーション、聞き手もふわふわ呼吸する（→ [vvlipsync](vvlipsync.md#体の動きとポーズ)）。
 
 ## メモ
 

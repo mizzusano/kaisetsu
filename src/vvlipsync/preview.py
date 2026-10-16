@@ -81,6 +81,40 @@ def compile_preview(
     print(f"プレビュー動画: {out_path}")
 
 
+# 透過動画の書き出し設定（拡張子ごと）。
+#   .mov  = ProRes 4444（DaVinci / Premiere / Final Cut で透過のまま扱える。容量は大きい）
+#   .webm = VP9 アルファ（ブラウザ・OBS 向け。軽い）
+ALPHA_CODECS = {
+    ".mov": ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
+             "-vendor", "apl0", "-c:a", "pcm_s16le"],
+    ".webm": ["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "30",
+              "-row-mt", "1", "-c:a", "libopus"],
+}
+
+
+def alpha_video_args(ffmpeg: str, frames_dir: str, audio_path: str, out_path: str,
+                     fps: float, digits: int = 5) -> list:
+    """透過 PNG 連番＋音声から、アルファ付き動画を作る ffmpeg 引数を返す。"""
+    ext = os.path.splitext(out_path)[1].lower()
+    if ext not in ALPHA_CODECS:
+        raise ValueError(f"透過動画は {' / '.join(ALPHA_CODECS)} のみ対応: {out_path}")
+    return [
+        ffmpeg, "-y",
+        "-framerate", str(fps), "-start_number", "0",
+        "-i", os.path.join(frames_dir, f"%0{digits}d.png"),
+        "-i", audio_path,
+        "-map", "0:v", "-map", "1:a",
+        *ALPHA_CODECS[ext],
+        "-shortest", out_path,
+    ]
+
+
+def compile_alpha_video(frames_dir: str, audio_path: str, out_path: str, fps: float) -> None:
+    args = alpha_video_args(_ffmpeg_bin(), frames_dir, audio_path, out_path, fps)
+    subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"透過動画: {out_path}")
+
+
 def _audio_duration(path: str) -> float:
     with wave.open(path) as w:
         return w.getnframes() / w.getframerate()

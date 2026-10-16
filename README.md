@@ -24,9 +24,14 @@ vvlipsync \
   --emotions assets/zundamon/emotions.json \
   -m assets/zundamon/ -s 3 --fps 30 --preview -o out/
 
+# DaVinci にタイムラインごと読み込む（timeline.fcpxml + 透過 character.mov）
+vvlipsync -t "[喜び]やったーなのだ" --emotions assets/zundamon/emotions.json \
+  -m assets/zundamon/ -s 3 --timeline -o out/
+
 # kaisetsu: markdown から解説動画を生成（Gemini API キー必要）
 kaisetsu 入力.md -o build_out/
 kaisetsu --script examples/kaisetsu_sample_script.json -o build_out/  # Gemini なし
+kaisetsu 入力.md -o build_out/ --timeline  # DaVinci 編集用タイムラインも書き出す
 ```
 
 出力 `out/`:
@@ -36,6 +41,8 @@ frames/        表情つき全身キャラの透過連番  ← DaVinci 画像シ
 audio.wav      音声                        ← 音声トラック
 subtitles.srt  字幕                        ← 字幕トラック
 preview.mp4    確認用（--preview 時のみ）
+character.mov  背景透過の動画（--alpha-video / --timeline 時）
+timeline.fcpxml タイムライン ← DaVinci: ファイル → 読み込み → タイムライン（--timeline 時）
 ```
 
 ## 立ち絵素材について

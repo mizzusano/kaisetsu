@@ -51,6 +51,13 @@ def _char_size(height: int):
     return w, height
 
 
+def slot_positions(size, char_height: int):
+    """左・右スロットの立ち絵左上座標 [(x, y), (x, y)]。完成動画とタイムラインで共通。"""
+    W, H = size
+    cw, ch = _char_size(char_height)
+    return [(60, H - ch), (W - cw - 60, H - ch)]
+
+
 def compose_line(slide_png: str, slots: List[dict], subtitle_png: str,
                  audio_path: str, out_path: str, fps: float,
                  size=(1920, 1080), char_height: int = 780,
@@ -62,8 +69,7 @@ def compose_line(slide_png: str, slots: List[dict], subtitle_png: str,
     ffmpeg = _ffmpeg()
     W, H = size
     cw, ch = _char_size(char_height)
-    y = H - ch
-    xs = [60, W - cw - 60]  # 左・右
+    pos = slot_positions(size, char_height)  # 左・右
 
     args = [ffmpeg, "-y", "-loop", "1", "-i", slide_png]  # input 0: スライド
     for slot in slots:
@@ -91,7 +97,7 @@ def compose_line(slide_png: str, slots: List[dict], subtitle_png: str,
     prev = "[0:v]"
     for i in range(len(slots)):
         out = f"[b{i}]"
-        fc.append(f"{prev}[s{i}]overlay=x={xs[i]}:y={y}:shortest=0{out}")
+        fc.append(f"{prev}[s{i}]overlay=x={pos[i][0]}:y={pos[i][1]}:shortest=0{out}")
         prev = out
     if use_sub:
         fc.append(f"{prev}[{sub_idx}:v]overlay=0:0[vov]")
