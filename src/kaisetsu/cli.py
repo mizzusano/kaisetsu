@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-from .build import build_video
+from .build import DEFAULT_SPEED, build_video
 from .env import load_env
 
 
@@ -29,6 +29,8 @@ def main(argv=None) -> int:
     p.add_argument("--script", help="台本 JSON を直接指定（Gemini を使わずに合成だけ行う）")
     p.add_argument("--model", default="gemini-2.5-flash", help="Gemini モデル")
     p.add_argument("--fps", type=float, default=30.0, help="フレームレート")
+    p.add_argument("--speed", type=float, default=DEFAULT_SPEED,
+                   help=f"話速 speedScale (既定: {DEFAULT_SPEED}。VOICEVOX 標準は 1.0)")
     p.add_argument("--bgm", default="", help="BGM ファイル（mp3 または mp4）。動画全体に小音量でミックス")
     p.add_argument("--bgm-volume", type=float, default=0.18, help="BGM の音量倍率 (既定: 0.18)")
     p.add_argument("--no-title-call", action="store_true",
@@ -85,6 +87,7 @@ def main(argv=None) -> int:
     final = build_video(script, args.out, args.assets_root, fps=args.fps,
                         bgm=args.bgm, bgm_volume=args.bgm_volume,
                         title_call=not args.no_title_call, announcer=args.announcer,
+                        speed=args.speed,
                         timeline=args.timeline or args.timeline_only,
                         video=not args.timeline_only,
                         base_dir=os.path.dirname(os.path.abspath(args.script)) if args.script else ".")

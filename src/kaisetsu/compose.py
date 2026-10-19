@@ -23,27 +23,54 @@ def _ffmpeg() -> str:
     return exe
 
 
-def render_subtitle(text: str, out_path: str, size=(1920, 1080)) -> None:
-    """字幕を全画面サイズの透過 PNG として描く（下部に半透明帯＋白文字）。"""
+# 字幕: 横いっぱいの半透明の帯に、太字の白文字＋話者色の縁取り（話者名・「」は出さない）
+SUBTITLE_BAND_H = 200
+SUBTITLE_FONT_SIZE = 62
+SUBTITLE_SIDE = 120  # 字幕文字の左右の余白
+SPEAKER_COLORS = {"zundamon": (46, 125, 50), "metan": (194, 54, 132)}
+_NO_LINE_START = "、。，．！？」』）】…ー"
+
+
+def wrap_subtitle(text: str, max_width: int, font=None) -> List[str]:
+    """字幕を折り返す。句読点などが行頭に来ないよう前の行へ寄せる（行頭禁則）。"""
     from PIL import Image, ImageDraw
     from .slides import FONT_BOLD, _font, _wrap
+
+    font = font or _font(FONT_BOLD, SUBTITLE_FONT_SIZE)
+    lines = _wrap(ImageDraw.Draw(Image.new("RGB", (8, 8))), text, font, max_width)
+    for i in range(1, len(lines)):
+        while lines[i] and lines[i][0] in _NO_LINE_START:
+            lines[i - 1] += lines[i][0]
+            lines[i] = lines[i][1:]
+    return [ln for ln in lines if ln]
+
+
+def render_subtitle(text: str, out_path: str, size=(1920, 1080),
+                    color=(60, 60, 60)) -> None:
+    """字幕を全画面サイズの透過 PNG として描く。color は話者の縁取り色。"""
+    from PIL import Image, ImageDraw
+    from .slides import FONT_BOLD, _font
 
     W, H = size
     img = Image.new("RGBA", size, (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    font = _font(FONT_BOLD, 52)
-    lines = _wrap(d, text, font, W - 360)
-    line_h = 66
-    box_h = line_h * len(lines) + 48
-    box_top = H - box_h - 48
-    d.rounded_rectangle([180, box_top, W - 180, box_top + box_h], radius=24,
-                        fill=(0, 0, 0, 175))
-    y = box_top + 24
+    d.rectangle([0, H - SUBTITLE_BAND_H, W, H], fill=(255, 255, 255, 110))
+    font = _font(FONT_BOLD, SUBTITLE_FONT_SIZE)
+    lines = wrap_subtitle(text, W - 2 * SUBTITLE_SIDE, font)
+    line_h = round(SUBTITLE_FONT_SIZE * 1.26)
+    y = H - SUBTITLE_BAND_H + (SUBTITLE_BAND_H - line_h * len(lines)) // 2 - 4
     for ln in lines:
-        w = d.textlength(ln, font=font)
-        d.text(((W - w) // 2, y), ln, font=font, fill=(255, 255, 255, 255))
+        x = (W - d.textlength(ln, font=font)) / 2
+        # 外側に白の細い縁、内側に話者色の太い縁
+        d.text((x, y), ln, font=font, fill="white", stroke_width=10, stroke_fill="white")
+        d.text((x, y), ln, font=font, fill="white", stroke_width=7, stroke_fill=tuple(color))
         y += line_h
     img.save(out_path)
+
+
+# 立ち絵: 画面端に寄せ、下を画面外に出して靴を描かない
+CHAR_EDGE = -40   # 画面端からの距離（負 = 少しはみ出す）
+CHAR_CUT = 0.16   # 立ち絵の下何割を画面外に出すか
 
 
 def _char_size(height: int):
@@ -55,7 +82,8 @@ def slot_positions(size, char_height: int):
     """左・右スロットの立ち絵左上座標 [(x, y), (x, y)]。完成動画とタイムラインで共通。"""
     W, H = size
     cw, ch = _char_size(char_height)
-    return [(60, H - ch), (W - cw - 60, H - ch)]
+    y = H - round(ch * (1 - CHAR_CUT))
+    return [(CHAR_EDGE, y), (W - cw - CHAR_EDGE, y)]
 
 
 def compose_line(slide_png: str, slots: List[dict], subtitle_png: str,

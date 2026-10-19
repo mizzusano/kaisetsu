@@ -17,19 +17,21 @@ from vvlipsync.motion import motion_at
 from vvlipsync.render import write_frames
 
 from . import timeline as tl
-from .compose import (CHAR_NATIVE, add_bgm, compose_line, concat_clips, render_subtitle,
-                      slot_positions)
+from .compose import (CHAR_EDGE, CHAR_NATIVE, SPEAKER_COLORS, SUBTITLE_BAND_H, add_bgm,
+                      compose_line, concat_clips, render_subtitle, slot_positions)
+from .reading import apply_readings, line_reading
 from .slides import (line_visuals, render_image_slide, render_slide, render_title_card,
                      resolve_images)
 
-CHAR_HEIGHT = 680  # 立ち絵の表示高さ(px)
-SUBTITLE_TOP = 852  # 字幕が 2 行の時の字幕帯の上端(px, 1080p)
+CHAR_HEIGHT = 860  # 立ち絵の表示高さ(px)。下は画面外に出す（compose.CHAR_CUT）
+DEFAULT_SPEED = 1.15  # 話速 speedScale。VOICEVOX 既定の 1.0 は解説動画には少しゆっくり
+SUBTITLE_TOP = 1080 - SUBTITLE_BAND_H  # 字幕帯の上端(px, 1080p)
 
 
 def _body_margin(size):
     """立ち絵幅に合わせ、本文を中央カラムに収めるマージンを返す。"""
     cw = round(CHAR_NATIVE[0] * CHAR_HEIGHT / CHAR_NATIVE[1])
-    m = cw + 60
+    m = cw + CHAR_EDGE + 20
     return (m, m)
 
 # 左=四国めたん / 右=ずんだもん。素の立ち絵が めたん=画面右向き・ずんだもん=画面左向き
@@ -59,9 +61,10 @@ def _listener_frames(char_dir: str, n_frames: int, fps: float, t_offset: float,
 DONE_MARKER = "segment.json"  # セグメント完成の印（途中から再開する時に使う）
 
 
-def _mark_done(seg_dir: str, n_frames: int) -> None:
+def _mark_done(seg_dir: str, n_frames: int, **speech) -> None:
+    """speech にはセリフ・話者・感情・話速を入れておき、変わっていたら再利用しない。"""
     with open(os.path.join(seg_dir, DONE_MARKER), "w", encoding="utf-8") as f:
-        json.dump({"n_frames": n_frames}, f)
+        json.dump({"n_frames": n_frames, **speech}, f, ensure_ascii=False)
 
 
 def _load_done(seg_dir: str):
@@ -86,7 +89,8 @@ def _wav_seconds(path: str) -> float:
 
 def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root,
                     fps, size, char_by_name, head, tail, clock, subtitle=True,
-                    show_characters=True, render_clip=True, keep_frames=True):
+                    show_characters=True, render_clip=True, keep_frames=True,
+                    speed=DEFAULT_SPEED, yomi=None):
     """1 セグメント（タイトルコール or 1 セリフ）を 1 クリップに合成する。
     show_characters=False ならキャラを出さず、音声のみのナレーション（章扉向け）。
     clock は通し時刻（秒）を持つ 1 要素リスト。呼吸の位相に使い、クリップ尺だけ進める。
@@ -102,7 +106,13 @@ def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root
     clip_path = os.path.join(out_dir, f"clip_{idx:03d}.mp4")
     audio = os.path.join(seg_dir, "audio.wav")
 
+    yomi = yomi or text  # 読み上げる文（字幕は text のまま）
+    speech = dict(text=text, yomi=yomi, speaker=speaker, emotion=emotion, speed=speed)
     done = _load_done(seg_dir)
+    if done and "yomi" not in done:
+        done = dict(done, yomi=done.get("text"))  # 読みを記録する前の印は、読み＝表記だった
+    if done and any(done.get(k) != v for k, v in speech.items()):
+        done = None  # セリフや話速が変わったので作り直す
     frames_ok = not keep_frames or os.path.isdir(os.path.join(seg_dir, "frames"))
     if done and frames_ok and os.path.isfile(audio) and (not render_clip or os.path.isfile(clip_path)):
         print(f"  （作成済みを再利用: seg_{idx:03d}）")
@@ -114,11 +124,11 @@ def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root
                           show_characters=show_characters)
         return (clip_path if render_clip else None), info
 
-    argv = ["-t", text, "-e", emotion,
+    argv = ["-t", yomi, "-e", emotion,
             "--emotions", os.path.join(spk_dir, "emotions.json"),
             "-m", spk_dir, "-s", str(spk["speaker"]),
             "--fps", str(fps), "-o", seg_dir,
-            "--motion-offset", str(clock[0] + head)]
+            "--motion-offset", str(clock[0] + head), "--speed", str(speed)]
     if spk["flip"]:
         argv.append("--flip")
     vvmain(argv)
@@ -126,7 +136,7 @@ def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root
     sub_png = ""
     if subtitle and render_clip:
         sub_png = os.path.join(seg_dir, "sub.png")
-        render_subtitle(f"{spk['label']}「{text}」", sub_png, size)
+        render_subtitle(text, sub_png, size, color=SPEAKER_COLORS.get(speaker, (60, 60, 60)))
 
     slots = []
     frames_dir = os.path.join(seg_dir, "frames")
@@ -146,7 +156,7 @@ def _render_segment(idx, bg_png, speaker, emotion, text, *, out_dir, assets_root
         clip = clip_path
         compose_line(bg_png, slots, sub_png, audio,
                      clip, fps, size, char_height=CHAR_HEIGHT, head=head, tail=tail)
-    _mark_done(seg_dir, n_frames)
+    _mark_done(seg_dir, n_frames, **speech)
     if render_clip and not keep_frames:
         _drop_frames(seg_dir)
     audio_sec = _wav_seconds(audio)
@@ -161,7 +171,8 @@ def build_video(script: dict, out_dir: str, assets_root: str,
                 fps: float = 30.0, size=(1920, 1080),
                 bgm: str = "", bgm_volume: float = 0.18,
                 title_call: bool = True, announcer: str = "zundamon",
-                timeline: bool = False, video: bool = True, base_dir: str = ".") -> str:
+                timeline: bool = False, video: bool = True, base_dir: str = ".",
+                speed: float = DEFAULT_SPEED) -> str:
     """解説動画を作る。timeline=True なら DaVinci 取り込み用の timeline/ も書き出す。
     video=False なら完成 mp4 の合成を省く（timeline のみ）。完成物のパスを返す。
     base_dir は台本内の画像パス（images[].src）の基準ディレクトリ。"""
@@ -173,8 +184,9 @@ def build_video(script: dict, out_dir: str, assets_root: str,
         resolve_images(slide, base_dir)
     common = dict(out_dir=out_dir, assets_root=assets_root, fps=fps, size=size,
                   char_by_name=char_by_name, clock=[0.0], render_clip=video,
-                  keep_frames=timeline)
+                  keep_frames=timeline, speed=speed)
 
+    readings = script.get("readings") or {}
     clips = []
     segments = []
     seg = 0
@@ -204,6 +216,8 @@ def build_video(script: dict, out_dir: str, assets_root: str,
             render_title_card(heading, tc_png, size, index=si + 1)
             print(f"[title {si + 1}] {heading}")
             clip, info = _render_segment(seg, tc_png, announcer, "喜び", heading,
+                                         yomi=slide.get("heading_yomi")
+                                         or apply_readings(heading, readings),
                                          head=0.5, tail=0.8, subtitle=False,
                                          show_characters=False, **common)
             clips.append(clip)
@@ -216,7 +230,8 @@ def build_video(script: dict, out_dir: str, assets_root: str,
             tail = 0.55 if j == len(dialogue) - 1 else 0.28
             print(f"[seg {seg}] {char_by_name[dl['speaker']]['label']}/{dl['emotion']}: {dl['text']}")
             clip, info = _render_segment(seg, bg_by_key[visuals[j]], dl["speaker"], dl["emotion"],
-                                         dl["text"], head=head, tail=tail, **common)
+                                         dl["text"], yomi=line_reading(dl, readings),
+                                         head=head, tail=tail, **common)
             clips.append(clip)
             segments.append(info)
             seg += 1

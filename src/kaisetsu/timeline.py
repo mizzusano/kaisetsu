@@ -121,8 +121,11 @@ def write_character_mov(frames: List[str], out_path: str, fps: float, size: Tupl
         except OSError:
             shutil.copyfile(src, dst)
     W, H = size
+    # 立ち絵は画面外にはみ出す配置（端に寄せ・足元を切る）なので、余白を足して置いてから切り出す
+    m = char_height
     vf = (f"format=rgba,scale=-1:{char_height}:flags=lanczos,"
-          f"pad={W}:{H}:{x}:{y}:color=0x00000000")
+          f"pad={W + 2 * m}:{H + 2 * m}:{x + m}:{y + m}:color=0x00000000,"
+          f"crop={W}:{H}:{m}:{m}")
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-framerate", str(fps), "-i", os.path.join(work, "%06d.png"),

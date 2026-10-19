@@ -47,9 +47,11 @@ class TestResume(unittest.TestCase):
         seg = os.path.join(out_dir, f"seg_{idx:03d}")
         os.makedirs(seg)
         _wav(os.path.join(seg, "audio.wav"), seconds=0.5)
-        build._mark_done(seg, n_frames=15)
+        build._mark_done(seg, n_frames=15, **self.META)
         open(os.path.join(out_dir, f"clip_{idx:03d}.mp4"), "wb").close()
         return seg
+
+    META = dict(text="やあ", speaker="metan", emotion="通常", speed=build.DEFAULT_SPEED)
 
     def test_finished_segment_is_skipped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -74,6 +76,21 @@ class TestResume(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     build._render_segment(0, "bg.png", "metan", "通常", "やあ", head=0.2,
                                           tail=0.3, **_common(d, keep_frames=True))
+
+    def test_changed_speech_settings_are_rebuilt(self):
+        # 話速やセリフを変えたら、印があっても作り直す（古い音声を使い回さない）
+        for change in (dict(speed=1.3), dict(text="こんにちは"), dict(emotion="喜び")):
+            with tempfile.TemporaryDirectory() as d:
+                self._done_segment(d)
+                kw = dict(text="やあ", emotion="通常")
+                kw.update({k: v for k, v in change.items() if k in ("text", "emotion")})
+                com = _common(d)
+                if "speed" in change:
+                    com["speed"] = change["speed"]
+                with mock.patch.object(build, "vvmain", side_effect=RuntimeError("rendered")):
+                    with self.assertRaises(RuntimeError, msg=str(change)):
+                        build._render_segment(0, "bg.png", "metan", kw["emotion"], kw["text"],
+                                              head=0.2, tail=0.3, **com)
 
     def test_clip_without_marker_is_rebuilt(self):
         # 書きかけで止まったクリップ（印が無い）は信用しない
